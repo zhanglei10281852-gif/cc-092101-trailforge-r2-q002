@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import joinedload, selectinload
 
 from trailforge.domain.enums import FitnessLevel
-from trailforge.models.users import EmergencyContact, HealthRestriction, SportProfile, User
+from trailforge.models.users import (
+    EmergencyContact,
+    HealthRestriction,
+    OutdoorExperience,
+    SportProfile,
+    User,
+)
 from trailforge.repositories.base import BaseRepository, PageResult
 from trailforge.schemas.users import UserFilter
 
@@ -28,6 +36,7 @@ class UserRepository(BaseRepository[User]):
                 joinedload(User.profile),
                 selectinload(User.emergency_contacts),
                 selectinload(User.health_restrictions),
+                selectinload(User.outdoor_experiences),
             )
             .where(User.id == user_id)
         )
@@ -105,3 +114,41 @@ class UserRepository(BaseRepository[User]):
             FitnessLevel.EXPERT: 4,
         }
         return ranks[FitnessLevel(profile.fitness_level)]
+
+    def active_restrictions(self, user_id: int) -> list[HealthRestriction]:
+        return list(
+            self.session.scalars(
+                select(HealthRestriction).where(
+                    HealthRestriction.user_id == user_id,
+                    HealthRestriction.is_active.is_(True),
+                )
+            )
+        )
+
+    def emergency_contact_count(self, user_id: int) -> int:
+        return self.contact_count(user_id)
+
+    def valid_experience(self, user_id: int, at: datetime) -> list[OutdoorExperience]:
+        """Experiences that have started and not expired at the given instant."""
+        return [
+            item
+            for item in self.list_outdoor_experiences(user_id)
+            if item.valid_from <= at and (item.valid_until is None or item.valid_until >= at)
+        ]
+
+    def list_outdoor_experiences(self, user_id: int) -> list[OutdoorExperience]:
+        return list(
+            self.session.scalars(
+                select(OutdoorExperience)
+                .where(OutdoorExperience.user_id == user_id)
+                .order_by(OutdoorExperience.valid_from.desc(), OutdoorExperience.id.desc())
+            )
+        )
+
+    def get_experience(self, user_id: int, experience_id: int) -> OutdoorExperience | None:
+        return self.session.scalar(
+            select(OutdoorExperience).where(
+                OutdoorExperience.id == experience_id,
+                OutdoorExperience.user_id == user_id,
+            )
+        )

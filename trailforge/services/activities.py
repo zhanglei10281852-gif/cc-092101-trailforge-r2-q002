@@ -7,6 +7,7 @@ from trailforge.domain.enums import (
     ACTIVITY_TRANSITIONS,
     ActivityStatus,
     AuditAction,
+    EligibilityOutcome,
     RegistrationStatus,
     TeamRole,
 )
@@ -35,7 +36,9 @@ from trailforge.schemas.activities import (
     WithdrawalRequest,
 )
 from trailforge.schemas.common import Page
+from trailforge.schemas.eligibility import EligibilityRules
 from trailforge.services.base import ServiceBase
+from trailforge.services.eligibility import EligibilityService
 
 
 class ExpeditionService(ServiceBase):
@@ -183,7 +186,10 @@ class ExpeditionService(ServiceBase):
         if utc_now() > expedition.registration_deadline:
             raise ConflictError("registration deadline has passed")
         existing = self.expeditions.get_registration(expedition_id, data.user_id)
-        if existing is not None and existing.status != RegistrationStatus.WITHDRAWN:
+        if existing is not None and existing.status not in {
+            RegistrationStatus.WITHDRAWN,
+            RegistrationStatus.REJECTED,
+        }:
             raise ConflictError("user is already registered for this expedition")
         conflict = self.expeditions.conflicting_registration(
             data.user_id,
@@ -196,23 +202,51 @@ class ExpeditionService(ServiceBase):
                 "user has another expedition during this time",
                 context={"conflicting_expedition_id": conflict.expedition_id},
             )
-        fitness_rank = self.users.fitness_rank(user.id)
-        if fitness_rank is None:
-            raise ValidationError("a sport profile is required before registration")
-        if fitness_rank < expedition.minimum_fitness_level:
-            raise ValidationError(
-                "user fitness level does not meet expedition requirement",
-                context={
-                    "required": expedition.minimum_fitness_level,
-                    "actual": fitness_rank,
-                },
+
+        eligibility = EligibilityService(self.session)
+        policy = eligibility.policies.active_policy(expedition_id)
+        decision_id: int | None = None
+        eligibility_outcome: str | None = None
+        if policy is None:
+            # Legacy path: expeditions without a configured policy keep the
+            # original single fitness-level gate.
+            fitness_rank = self.users.fitness_rank(user.id)
+            if fitness_rank is None:
+                raise ValidationError("a sport profile is required before registration")
+            if fitness_rank < expedition.minimum_fitness_level:
+                raise ValidationError(
+                    "user fitness level does not meet expedition requirement",
+                    context={
+                        "required": expedition.minimum_fitness_level,
+                        "actual": fitness_rank,
+                    },
+                )
+            confirmed = self.expeditions.confirmed_count(expedition.id)
+            status = (
+                RegistrationStatus.CONFIRMED
+                if confirmed < expedition.capacity
+                else RegistrationStatus.WAITLISTED
             )
-        confirmed = self.expeditions.confirmed_count(expedition.id)
-        status = (
-            RegistrationStatus.CONFIRMED
-            if confirmed < expedition.capacity
-            else RegistrationStatus.WAITLISTED
-        )
+        else:
+            rules = EligibilityRules.model_validate(policy.rules_json)
+            evaluation = eligibility.evaluate(
+                user_id=user.id, rules=rules, policy=policy, now=utc_now()
+            )
+            eligibility_outcome = evaluation.outcome.value
+            if evaluation.outcome == EligibilityOutcome.APPROVED:
+                confirmed = self.expeditions.confirmed_count(expedition.id)
+                status = (
+                    RegistrationStatus.CONFIRMED
+                    if confirmed < expedition.capacity
+                    else RegistrationStatus.WAITLISTED
+                )
+            elif evaluation.outcome == EligibilityOutcome.MANUAL_REVIEW:
+                # Pending reviews reserve the time slot but not a capacity slot.
+                status = RegistrationStatus.PENDING
+            else:
+                status = RegistrationStatus.REJECTED
+
+        attempt = eligibility.decisions.next_attempt(expedition_id, user.id) if policy else 0
         if existing is None:
             registration = ExpeditionRegistration(
                 expedition_id=expedition.id,
@@ -232,6 +266,19 @@ class ExpeditionService(ServiceBase):
             registration.notes = data.notes
             apply_version(registration, None)
         self.session.flush()
+
+        if policy is not None:
+            decision = eligibility.persist_decision(
+                expedition_id=expedition.id,
+                user_id=user.id,
+                evaluation=evaluation,
+                registration_id=registration.id,
+                attempt=attempt,
+            )
+            registration.latest_decision_id = decision.id
+            decision_id = decision.id
+            self.session.flush()
+
         response = RegistrationResponse.model_validate(registration)
         self.save_idempotent(
             scope=scope,
@@ -247,7 +294,12 @@ class ExpeditionService(ServiceBase):
             entity_id=registration.id,
             action=AuditAction.REGISTERED,
             after=self.snapshot(registration),
-            context={"expedition_id": expedition.id, "capacity_status": status.value},
+            context={
+                "expedition_id": expedition.id,
+                "capacity_status": status.value,
+                "eligibility_outcome": eligibility_outcome,
+                "decision_id": decision_id,
+            },
             correlation_id=data.idempotency_key,
         )
         return response
@@ -312,7 +364,12 @@ class ExpeditionService(ServiceBase):
         active = [
             item
             for item in expedition.registrations
-            if item.status in {RegistrationStatus.CONFIRMED, RegistrationStatus.WAITLISTED}
+            if item.status
+            in {
+                RegistrationStatus.CONFIRMED,
+                RegistrationStatus.WAITLISTED,
+                RegistrationStatus.PENDING,
+            }
         ]
         entries: list[ExpeditionRosterEntry] = []
         for registration in sorted(active, key=lambda item: (item.registered_at, item.id)):
@@ -329,15 +386,18 @@ class ExpeditionService(ServiceBase):
                     fitness_level=profile.fitness_level if profile else None,
                     has_emergency_contact=self.users.contact_count(user.id) > 0,
                     active_health_restrictions=self.users.active_restriction_count(user.id),
+                    latest_decision_id=registration.latest_decision_id,
                 )
             )
         confirmed = sum(item.status == RegistrationStatus.CONFIRMED for item in active)
         waitlisted = sum(item.status == RegistrationStatus.WAITLISTED for item in active)
+        pending = sum(item.status == RegistrationStatus.PENDING for item in active)
         return ExpeditionRoster(
             expedition_id=expedition.id,
             capacity=expedition.capacity,
             confirmed_count=confirmed,
             waitlisted_count=waitlisted,
+            pending_count=pending,
             available_places=max(expedition.capacity - confirmed, 0),
             members=entries,
         )

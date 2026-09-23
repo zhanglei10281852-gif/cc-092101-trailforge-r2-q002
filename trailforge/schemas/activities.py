@@ -105,6 +105,7 @@ class RegistrationResponse(VersionedResponse):
     registered_at: datetime
     withdrawn_at: datetime | None
     notes: str
+    latest_decision_id: int | None = None
 
 
 class WithdrawalRequest(BaseModel):
@@ -146,6 +147,7 @@ class ExpeditionRosterEntry(BaseModel):
     fitness_level: str | None
     has_emergency_contact: bool
     active_health_restrictions: int
+    latest_decision_id: int | None = None
 
 
 class ExpeditionRoster(BaseModel):
@@ -153,6 +155,7 @@ class ExpeditionRoster(BaseModel):
     capacity: int
     confirmed_count: int
     waitlisted_count: int
+    pending_count: int = 0
     available_places: int
     members: list[ExpeditionRosterEntry]
 

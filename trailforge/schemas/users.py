@@ -2,10 +2,16 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from trailforge.domain.enums import FitnessLevel
-from trailforge.schemas.common import ORMModel, PositiveId, TimestampedResponse, clean_text
+from trailforge.schemas.common import (
+    ORMModel,
+    PositiveId,
+    TimestampedResponse,
+    clean_text,
+    require_aware,
+)
 
 
 class UserCreate(BaseModel):
@@ -152,11 +158,45 @@ class HealthRestrictionResponse(TimestampedResponse):
     is_active: bool
 
 
+class OutdoorExperienceCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    level: int = Field(ge=1, le=5)
+    valid_from: datetime
+    valid_until: datetime | None = None
+    notes: str = Field(default="", max_length=4000)
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        return clean_text(value)
+
+    @field_validator("valid_from", "valid_until")
+    @classmethod
+    def normalize_time(cls, value: datetime | None) -> datetime | None:
+        return require_aware(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_period(self) -> OutdoorExperienceCreate:
+        if self.valid_until is not None and self.valid_until < self.valid_from:
+            raise ValueError("valid_until cannot be earlier than valid_from")
+        return self
+
+
+class OutdoorExperienceResponse(TimestampedResponse):
+    user_id: int
+    title: str
+    level: int
+    valid_from: datetime
+    valid_until: datetime | None
+    notes: str
+
+
 class UserProfileResponse(ORMModel):
     user: UserResponse
     sport_profile: SportProfileResponse | None
     emergency_contacts: list[EmergencyContactResponse]
     health_restrictions: list[HealthRestrictionResponse]
+    outdoor_experiences: list[OutdoorExperienceResponse] = Field(default_factory=list)
 
 
 class UserFilter(BaseModel):

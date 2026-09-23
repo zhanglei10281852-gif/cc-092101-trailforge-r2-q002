@@ -109,6 +109,37 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/v1/routes?actor_id=1' \
 
 列表接口都支持 `page`、`page_size`、`sort` 和 `direction`；各资源只接受文档中列出的排序字段，未知字段会返回明确的 422 业务错误。创建报名、打卡、紧急事件和库存变更时，正文包含 `idempotency_key`。同一作用域下用相同键和相同请求会返回原资源，用相同键发送不同请求会返回 409。
 
+## 可配置的报名资格策略
+
+高风险活动不再只看一个体能等级。活动组织者可以为活动维护一份**追加版本化**的资格策略，报名事务会在其中计算 `approved`（通过）、`rejected`（拒绝）或 `manual_review`（待复核）：
+
+- 最近 N 天的耐力（`endurance`）或负重行走（`loaded_walk`）训练门槛，指标可选总时长、完成次数、距离或训练负荷，只统计该时间窗内**已完成**的对应类型训练；
+- 最低户外经验等级，要求经验在评估时刻仍然有效（过期经验不计入），可选“近 N 天内取得”的时效要求；
+- 健康限制名单：每条按名称匹配（`*` 匹配任意活跃限制），可配置为直接拒绝或转人工复核；已停用的限制不参与匹配；
+- 是否必须至少登记一个紧急联系人。
+
+配置策略（仅活动组织者，活动处于 draft/open 时可改；正文带 `expected_version` 做乐观并发控制）：
+
+```bash
+curl -sS -X PUT 'http://127.0.0.1:8000/api/v1/expeditions/1/eligibility-policy?actor_id=1' \
+  -H 'Content-Type: application/json' \
+  -d '{"rules":{"training_requirements":[{"training_type":"endurance","window_days":14,"metric":"duration_minutes","minimum":120}],"minimum_outdoor_level":3,"experience_recency_days":365,"health_restriction_rules":[{"restriction_name":"heart condition","action":"deny"},{"restriction_name":"asthma","action":"review"}],"require_emergency_contact":true},"change_note":"高海拔线路加严","expected_version":1}'
+```
+
+策略每次更新都生成新版本（`GET /expeditions/{id}/eligibility-policy/versions`），旧版本置为非活跃但永久保留；**策略更新只影响之后的申请**。报名前可以调用 `POST /expeditions/{id}/eligibility-precheck` 做不落库的预检。
+
+报名结果的语义：
+
+- 全部通过 → `confirmed`（满员则 `waitlisted`）；
+- 命中任一拒绝规则 → `rejected`，不占用名额，也不阻塞时间档；
+- 仅命中人工复核规则 → `pending`，占用时间档的考虑但不占容量名额，花名册以 `pending_count` 单列。
+
+每次评估都会写入一条**不可变决策记录** `eligibility_decisions`，冻结当时的策略版本号、规则快照、输入事实（训练窗口数值、有效/过期经验、活跃健康限制、联系人数量）和逐条原因（通过与否、期望值与实际值）。之后用户档案、训练或经验如何变化都不会改写历史结论；撤回后重新报名会生成新的 `attempt` 决策行。
+
+待复核只能由活动组织者处理（`POST /eligibility-decisions/{id}/reviews`），请求必须带理由和 `expected_version` 乐观锁。批准时系统会在同事务内**重新检查容量与时间冲突**（容量和时间判断下推到条件 UPDATE，读最新已提交数据，因此并发复核不会超卖名额）：有空位且无冲突才 `confirmed`，满员则 `waitlisted`，时间冲突返回 409；拒绝则置 `rejected`。已处理的决策不能二次复核。
+
+未配置策略的旧活动完全保持原有行为：仍使用活动的 `minimum_fitness_level` 单一门槛，不产生任何决策记录，预检直接返回 `approved`。审计日志只记录规则数量和计数，不写入健康限制名称、诊断描述或联系人电话。
+
 ## 目录
 
 ```text

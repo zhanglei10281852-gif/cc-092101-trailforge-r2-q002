@@ -15,6 +15,8 @@ from trailforge.schemas.users import (
     HealthRestrictionCreate,
     HealthRestrictionResponse,
     HealthRestrictionUpdate,
+    OutdoorExperienceCreate,
+    OutdoorExperienceResponse,
     SportProfileResponse,
     SportProfileUpsert,
     UserCreate,
@@ -136,3 +138,17 @@ def update_health_restriction(
     actor_id: int = Query(gt=0),
 ) -> HealthRestrictionResponse:
     return UserService(session).update_restriction(user_id, restriction_id, data, actor_id=actor_id)
+
+
+@router.post(
+    "/{user_id}/outdoor-experiences",
+    response_model=OutdoorExperienceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_outdoor_experience(
+    user_id: int,
+    data: OutdoorExperienceCreate,
+    session: SessionDep,
+    actor_id: int = Query(gt=0),
+) -> OutdoorExperienceResponse:
+    return UserService(session).add_experience(user_id, data, actor_id=actor_id)

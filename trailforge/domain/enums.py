@@ -160,6 +160,32 @@ class AuditAction(StrEnum):
     RETURNED = "returned"
     RISK_RECORDED = "risk_recorded"
     EMERGENCY_RECORDED = "emergency_recorded"
+    POLICY_PUBLISHED = "policy_published"
+    ELIGIBILITY_EVALUATED = "eligibility_evaluated"
+    ELIGIBILITY_REVIEWED = "eligibility_reviewed"
+
+
+class EligibilityOutcome(StrEnum):
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    MANUAL_REVIEW = "manual_review"
+
+
+class HealthRuleAction(StrEnum):
+    DENY = "deny"
+    REVIEW = "review"
+
+
+class TrainingMetric(StrEnum):
+    DURATION_MINUTES = "duration_minutes"
+    SESSION_COUNT = "session_count"
+    DISTANCE_KM = "distance_km"
+    TRAINING_LOAD = "training_load"
+
+
+class ReviewDecision(StrEnum):
+    APPROVE = "approve"
+    REJECT = "reject"
 
 
 PLAN_TRANSITIONS: dict[PlanStatus, set[PlanStatus]] = {

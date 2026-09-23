@@ -5,7 +5,13 @@ from sqlalchemy.orm import Session
 
 from trailforge.domain.enums import AuditAction
 from trailforge.errors import ConflictError, NotFoundError
-from trailforge.models.users import EmergencyContact, HealthRestriction, SportProfile, User
+from trailforge.models.users import (
+    EmergencyContact,
+    HealthRestriction,
+    OutdoorExperience,
+    SportProfile,
+    User,
+)
 from trailforge.repositories.users import UserRepository
 from trailforge.schemas.common import Page
 from trailforge.schemas.users import (
@@ -15,6 +21,8 @@ from trailforge.schemas.users import (
     HealthRestrictionCreate,
     HealthRestrictionResponse,
     HealthRestrictionUpdate,
+    OutdoorExperienceCreate,
+    OutdoorExperienceResponse,
     SportProfileResponse,
     SportProfileUpsert,
     UserCreate,
@@ -66,6 +74,10 @@ class UserService(ServiceBase):
             ],
             health_restrictions=[
                 HealthRestrictionResponse.model_validate(item) for item in user.health_restrictions
+            ],
+            outdoor_experiences=[
+                OutdoorExperienceResponse.model_validate(item)
+                for item in user.outdoor_experiences
             ],
         )
 
@@ -214,3 +226,25 @@ class UserService(ServiceBase):
             after=self.snapshot(restriction),
         )
         return HealthRestrictionResponse.model_validate(restriction)
+
+    def add_experience(
+        self, user_id: int, data: OutdoorExperienceCreate, *, actor_id: int
+    ) -> OutdoorExperienceResponse:
+        self.users.require(user_id)
+        experience = OutdoorExperience(user_id=user_id, **data.model_dump())
+        try:
+            with self.session.begin_nested():
+                self.session.add(experience)
+                self.session.flush()
+        except IntegrityError as exc:
+            raise ConflictError("outdoor experience title must be unique for a user") from exc
+        self.audit(
+            actor_id=actor_id,
+            entity_type="outdoor_experience",
+            entity_id=experience.id,
+            action=AuditAction.CREATED,
+            after=self.snapshot(
+                experience, "id", "user_id", "title", "level", "valid_from", "valid_until"
+            ),
+        )
+        return OutdoorExperienceResponse.model_validate(experience)

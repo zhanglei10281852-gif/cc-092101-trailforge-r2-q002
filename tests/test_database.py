@@ -30,7 +30,79 @@ def test_database_enables_foreign_keys_and_wal(database: Database) -> None:
 def test_migration_initialization_is_idempotent(database: Database) -> None:
     assert initialize_database(database) == []
     status = migration_status(database)
-    assert status == {"initialized": True, "applied": ["0001"], "pending": []}
+    assert status == {
+        "initialized": True,
+        "applied": ["0001", "0002"],
+        "pending": [],
+    }
+
+
+def test_database_created_at_0001_upgrades_to_0002(tmp_path) -> None:
+    """A database carrying the 0001-era registrations table gains the new column."""
+    import sqlite3
+
+    from trailforge.config import Settings
+
+    db_path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(
+            """
+            CREATE TABLE expedition_registrations (
+                id INTEGER NOT NULL PRIMARY KEY,
+                expedition_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                role VARCHAR(24) NOT NULL,
+                status VARCHAR(24) NOT NULL,
+                registered_at VARCHAR(32) NOT NULL,
+                withdrawn_at VARCHAR(32),
+                notes TEXT NOT NULL,
+                created_at VARCHAR(32) NOT NULL,
+                updated_at VARCHAR(32) NOT NULL,
+                version INTEGER NOT NULL,
+                CONSTRAINT uq_registration_expedition_user UNIQUE (expedition_id, user_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE schema_migrations (
+                id INTEGER NOT NULL PRIMARY KEY,
+                version VARCHAR(60) NOT NULL UNIQUE,
+                description TEXT NOT NULL,
+                applied_at VARCHAR(32) NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations (version, description, applied_at) "
+            "VALUES ('0001', 'Initial', '2026-01-01T00:00:00Z')"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    upgraded = Database(Settings(database_url=f"sqlite:///{db_path}"))
+    assert initialize_database(upgraded) == ["0002"]
+    # Second run must not fail with a duplicate-column error.
+    assert initialize_database(upgraded) == []
+    with upgraded.engine.begin() as conn:
+        columns = [row[1] for row in conn.execute(
+            text("PRAGMA table_info(expedition_registrations)")
+        ).fetchall()]
+        assert "latest_decision_id" in columns
+        tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+        assert {
+            "eligibility_policies",
+            "eligibility_decisions",
+            "outdoor_experiences",
+        } <= tables
+    upgraded.engine.dispose()
 
 
 def test_integrity_check_reports_healthy_database(database: Database) -> None:

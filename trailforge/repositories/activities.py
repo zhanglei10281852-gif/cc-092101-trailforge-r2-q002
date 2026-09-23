@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, exists, func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from trailforge.domain.enums import RegistrationStatus
@@ -14,6 +14,11 @@ ACTIVE_REGISTRATION_STATUSES = {
     RegistrationStatus.CONFIRMED,
     RegistrationStatus.PENDING,
 }
+
+# Only confirmed members occupy the schedule. Pending reviews are not yet
+# admitted and waitlisted members never blocked other sign-ups, so neither
+# participates in time-overlap checks (approval re-runs the same check).
+TIME_BLOCKING_STATUSES = {RegistrationStatus.CONFIRMED}
 
 
 class ExpeditionRepository(BaseRepository[Expedition]):
@@ -102,6 +107,125 @@ class ExpeditionRepository(BaseRepository[Expedition]):
         )
         return int(self.session.scalar(statement) or 0)
 
+    def confirm_pending_if_room_and_no_conflict(
+        self,
+        registration_id: int,
+        *,
+        expedition_id: int,
+        user_id: int,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> int:
+        """Atomically move PENDING -> CONFIRMED if capacity and schedule allow.
+
+        All predicates run in the UPDATE's write cursor against the latest
+        committed data, so two concurrent approvals of different applicants
+        can never both observe a free last seat.
+        """
+        return int(
+            self.session.execute(
+                self._pending_transition_statement(
+                    registration_id,
+                    RegistrationStatus.CONFIRMED,
+                    expedition_id=expedition_id,
+                    user_id=user_id,
+                    start_at=start_at,
+                    end_at=end_at,
+                    require_room=True,
+                )
+            ).rowcount
+            or 0
+        )
+
+    def waitlist_pending_if_no_conflict(
+        self,
+        registration_id: int,
+        *,
+        expedition_id: int,
+        user_id: int,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> int:
+        """Atomically move PENDING -> WAITLISTED regardless of capacity."""
+        return int(
+            self.session.execute(
+                self._pending_transition_statement(
+                    registration_id,
+                    RegistrationStatus.WAITLISTED,
+                    expedition_id=expedition_id,
+                    user_id=user_id,
+                    start_at=start_at,
+                    end_at=end_at,
+                    require_room=False,
+                )
+            ).rowcount
+            or 0
+        )
+
+    def reject_pending(self, registration_id: int) -> int:
+        statement = (
+            update(ExpeditionRegistration)
+            .where(
+                ExpeditionRegistration.id == registration_id,
+                ExpeditionRegistration.status == RegistrationStatus.PENDING,
+            )
+            .values(
+                status=RegistrationStatus.REJECTED,
+                version=ExpeditionRegistration.version + 1,
+            )
+        )
+        return int(self.session.execute(statement).rowcount or 0)
+
+    def _pending_transition_statement(
+        self,
+        registration_id: int,
+        target: RegistrationStatus,
+        *,
+        expedition_id: int,
+        user_id: int,
+        start_at: datetime,
+        end_at: datetime,
+        require_room: bool,
+    ):
+        capacity = (
+            select(Expedition.capacity)
+            .where(Expedition.id == expedition_id)
+            .scalar_subquery()
+        )
+        confirmed = (
+            select(func.count())
+            .select_from(ExpeditionRegistration)
+            .where(
+                ExpeditionRegistration.expedition_id == expedition_id,
+                ExpeditionRegistration.status == RegistrationStatus.CONFIRMED,
+            )
+            .scalar_subquery()
+        )
+        schedule_conflict = (
+            select(ExpeditionRegistration.id)
+            .join(Expedition)
+            .where(
+                ExpeditionRegistration.user_id == user_id,
+                ExpeditionRegistration.status == RegistrationStatus.CONFIRMED,
+                Expedition.id != expedition_id,
+                Expedition.start_at < end_at,
+                Expedition.end_at > start_at,
+            )
+            .limit(1)
+        )
+        conditions = [
+            ExpeditionRegistration.id == registration_id,
+            ExpeditionRegistration.status == RegistrationStatus.PENDING,
+            ~exists(schedule_conflict),
+        ]
+        if require_room:
+            conditions.append(confirmed < capacity)
+        return (
+            update(ExpeditionRegistration)
+            .where(*conditions)
+            .values(status=target, version=ExpeditionRegistration.version + 1)
+        )
+
     def conflicting_registration(
         self,
         user_id: int,
@@ -115,7 +239,7 @@ class ExpeditionRepository(BaseRepository[Expedition]):
             .join(Expedition)
             .where(
                 ExpeditionRegistration.user_id == user_id,
-                ExpeditionRegistration.status.in_(ACTIVE_REGISTRATION_STATUSES),
+                ExpeditionRegistration.status.in_(TIME_BLOCKING_STATUSES),
                 Expedition.start_at < end_at,
                 Expedition.end_at > start_at,
             )

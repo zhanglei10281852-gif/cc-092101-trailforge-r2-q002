@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import (
     Boolean,
@@ -8,13 +8,14 @@ from sqlalchemy import (
     Date,
     Float,
     ForeignKey,
+    Integer,
     String,
     Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from trailforge.database.base import Base
+from trailforge.database.base import Base, UTCDateTime
 from trailforge.domain.enums import FitnessLevel
 from trailforge.models.mixins import IntegerPrimaryKeyMixin, TimestampMixin
 
@@ -44,6 +45,10 @@ class User(IntegerPrimaryKeyMixin, TimestampMixin, Base):
         order_by="EmergencyContact.priority",
     )
     health_restrictions: Mapped[list[HealthRestriction]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    outdoor_experiences: Mapped[list[OutdoorExperience]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
     )
@@ -104,3 +109,23 @@ class HealthRestriction(IntegerPrimaryKeyMixin, TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     user: Mapped[User] = relationship(back_populates="health_restrictions")
+
+
+class OutdoorExperience(IntegerPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "outdoor_experiences"
+    __table_args__ = (
+        UniqueConstraint("user_id", "title", name="uq_experience_user_title"),
+        CheckConstraint("level BETWEEN 1 AND 5", name="experience_level_range"),
+        CheckConstraint(
+            "valid_until IS NULL OR valid_from <= valid_until", name="experience_period"
+        ),
+    )
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    level: Mapped[int] = mapped_column(Integer, nullable=False)
+    valid_from: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    valid_until: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="outdoor_experiences")

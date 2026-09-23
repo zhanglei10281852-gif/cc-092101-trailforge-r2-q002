@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import selectinload
 
+from trailforge.domain.enums import SessionStatus
 from trailforge.models.training import (
     TrainingExercise,
     TrainingPlan,
@@ -101,3 +102,46 @@ class TrainingRepository(BaseRepository[TrainingPlan]):
         if end_at is not None:
             statement = statement.where(TrainingSession.planned_start_at <= end_at)
         return list(self.session.execute(statement).tuples())
+
+    def training_window_summary(
+        self,
+        user_id: int,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> dict[str, dict[str, float]]:
+        """Aggregate completed-session records per exercise training type.
+
+        Time basis is the actual session start, so timezone-aware window edges
+        compare against when the training really happened.
+        """
+        duration = func.coalesce(func.sum(TrainingRecord.duration_minutes), 0)
+        distance = func.coalesce(func.sum(TrainingRecord.distance_km), 0.0)
+        load = func.coalesce(func.sum(TrainingRecord.training_load), 0.0)
+        sessions = func.count(func.distinct(TrainingSession.id))
+        statement = (
+            select(
+                TrainingExercise.training_type,
+                duration.label("duration_minutes"),
+                sessions.label("session_count"),
+                distance.label("distance_km"),
+                load.label("training_load"),
+            )
+            .join(TrainingSession, TrainingSession.id == TrainingRecord.session_id)
+            .join(TrainingExercise, TrainingExercise.id == TrainingRecord.exercise_id)
+            .where(
+                TrainingSession.user_id == user_id,
+                TrainingSession.status == SessionStatus.COMPLETED,
+                TrainingSession.actual_start_at >= window_start,
+                TrainingSession.actual_start_at <= window_end,
+            )
+            .group_by(TrainingExercise.training_type)
+        )
+        result: dict[str, dict[str, float]] = {}
+        for row in self.session.execute(statement).mappings():
+            result[str(row["training_type"])] = {
+                "duration_minutes": float(row["duration_minutes"]),
+                "session_count": float(row["session_count"]),
+                "distance_km": round(float(row["distance_km"]), 3),
+                "training_load": round(float(row["training_load"]), 3),
+            }
+        return result

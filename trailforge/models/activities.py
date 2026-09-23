@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from trailforge.database.base import Base, UTCDateTime
 from trailforge.domain.enums import ActivityStatus, RegistrationStatus, RiskLevel, TeamRole
+from trailforge.models.eligibility import EligibilityPolicy
 from trailforge.models.mixins import IntegerPrimaryKeyMixin, TimestampMixin, VersionMixin
 
 
@@ -44,6 +45,10 @@ class Expedition(IntegerPrimaryKeyMixin, TimestampMixin, VersionMixin, Base):
         back_populates="expedition",
         cascade="all, delete-orphan",
     )
+    eligibility_policies: Mapped[list[EligibilityPolicy]] = relationship(
+        cascade="all, delete-orphan",
+        order_by="EligibilityPolicy.version",
+    )
 
 
 class ExpeditionRegistration(IntegerPrimaryKeyMixin, TimestampMixin, VersionMixin, Base):
@@ -63,5 +68,6 @@ class ExpeditionRegistration(IntegerPrimaryKeyMixin, TimestampMixin, VersionMixi
     registered_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     withdrawn_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    latest_decision_id: Mapped[int | None] = mapped_column(Integer, index=True)
 
     expedition: Mapped[Expedition] = relationship(back_populates="registrations")
