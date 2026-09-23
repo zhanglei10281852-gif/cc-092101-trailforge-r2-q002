@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import selectinload
 
+from trailforge.domain.enums import SessionStatus, TrainingType
 from trailforge.models.training import (
     TrainingExercise,
     TrainingPlan,
@@ -101,3 +102,33 @@ class TrainingRepository(BaseRepository[TrainingPlan]):
         if end_at is not None:
             statement = statement.where(TrainingSession.planned_start_at <= end_at)
         return list(self.session.execute(statement).tuples())
+
+    def endurance_minutes(self, user_id: int, *, since: datetime) -> int:
+        """Total endurance minutes from completed sessions planned at or after ``since``."""
+        statement = (
+            select(func.coalesce(func.sum(TrainingRecord.duration_minutes), 0))
+            .join(TrainingSession, TrainingSession.id == TrainingRecord.session_id)
+            .join(TrainingExercise, TrainingExercise.id == TrainingRecord.exercise_id)
+            .where(
+                TrainingSession.user_id == user_id,
+                TrainingSession.status == SessionStatus.COMPLETED,
+                TrainingSession.planned_start_at >= since,
+                TrainingExercise.training_type == TrainingType.ENDURANCE,
+            )
+        )
+        return int(self.session.scalar(statement) or 0)
+
+    def loaded_session_count(self, user_id: int, *, since: datetime) -> int:
+        """Completed sessions with a loaded-walk record, planned at or after ``since``."""
+        statement = (
+            select(func.count(func.distinct(TrainingSession.id)))
+            .join(TrainingRecord, TrainingRecord.session_id == TrainingSession.id)
+            .join(TrainingExercise, TrainingExercise.id == TrainingRecord.exercise_id)
+            .where(
+                TrainingSession.user_id == user_id,
+                TrainingSession.status == SessionStatus.COMPLETED,
+                TrainingSession.planned_start_at >= since,
+                TrainingExercise.training_type == TrainingType.LOADED_WALK,
+            )
+        )
+        return int(self.session.scalar(statement) or 0)

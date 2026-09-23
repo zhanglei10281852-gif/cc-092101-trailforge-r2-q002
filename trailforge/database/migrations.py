@@ -16,6 +16,10 @@ class Migration:
 
 MIGRATIONS = [
     Migration(version="0001", description="Initial TrailForge schema"),
+    Migration(
+        version="0002",
+        description="Eligibility policies, evaluations and reviews",
+    ),
 ]
 
 

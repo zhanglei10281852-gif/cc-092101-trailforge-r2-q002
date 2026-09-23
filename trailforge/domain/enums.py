@@ -148,6 +148,23 @@ class InventoryMovementType(StrEnum):
     RETIRE = "retire"
 
 
+class EligibilityDecision(StrEnum):
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    PENDING_REVIEW = "pending_review"
+
+
+class EligibilityRuleOutcome(StrEnum):
+    PASSED = "passed"
+    FAILED = "failed"
+    REVIEW = "review"
+
+
+class ReviewDecision(StrEnum):
+    APPROVE = "approve"
+    REJECT = "reject"
+
+
 class AuditAction(StrEnum):
     CREATED = "created"
     UPDATED = "updated"
@@ -160,6 +177,8 @@ class AuditAction(StrEnum):
     RETURNED = "returned"
     RISK_RECORDED = "risk_recorded"
     EMERGENCY_RECORDED = "emergency_recorded"
+    ELIGIBILITY_EVALUATED = "eligibility_evaluated"
+    ELIGIBILITY_REVIEWED = "eligibility_reviewed"
 
 
 PLAN_TRANSITIONS: dict[PlanStatus, set[PlanStatus]] = {

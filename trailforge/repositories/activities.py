@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.orm import selectinload
 
-from trailforge.domain.enums import RegistrationStatus
+from trailforge.domain.enums import ActivityStatus, RegistrationStatus
 from trailforge.models.activities import Expedition, ExpeditionRegistration
 from trailforge.repositories.base import BaseRepository, PageResult
 from trailforge.schemas.activities import ExpeditionFilter
@@ -94,6 +94,66 @@ class ExpeditionRepository(BaseRepository[Expedition]):
         if for_update:
             statement = statement.with_for_update()
         return self.session.scalar(statement)
+
+    def get_registration_by_id(
+        self,
+        registration_id: int,
+        *,
+        for_update: bool = False,
+    ) -> ExpeditionRegistration | None:
+        statement = select(ExpeditionRegistration).where(
+            ExpeditionRegistration.id == registration_id
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        return self.session.scalar(statement)
+
+    def transition_registration_status(
+        self,
+        registration_id: int,
+        *,
+        expected_version: int,
+        expected_status: RegistrationStatus,
+        new_status: RegistrationStatus,
+    ) -> bool:
+        """Atomically move a registration to ``new_status``.
+
+        The version and current status are part of the WHERE clause, so a
+        concurrent transaction that already changed the row makes this
+        statement match nothing instead of silently overwriting it.
+        """
+        result = self.session.execute(
+            update(ExpeditionRegistration)
+            .where(
+                ExpeditionRegistration.id == registration_id,
+                ExpeditionRegistration.version == expected_version,
+                ExpeditionRegistration.status == expected_status,
+            )
+            .values(
+                status=new_status,
+                version=ExpeditionRegistration.version + 1,
+            )
+        )
+        return result.rowcount == 1
+
+    def completed_expedition_count(self, user_id: int, *, since: datetime | None = None) -> int:
+        """Expeditions the user completed as a confirmed participant.
+
+        ``since`` optionally limits the count to expeditions that ended at or
+        after the given moment, which models expiring outdoor experience.
+        """
+        statement = (
+            select(func.count(Expedition.id))
+            .join(ExpeditionRegistration, ExpeditionRegistration.expedition_id == Expedition.id)
+            .where(
+                ExpeditionRegistration.user_id == user_id,
+                ExpeditionRegistration.status == RegistrationStatus.CONFIRMED,
+                Expedition.status == ActivityStatus.COMPLETED,
+            )
+        )
+        if since is not None:
+            statement = statement.where(Expedition.end_at >= since)
+        return int(self.session.scalar(statement) or 0)
 
     def confirmed_count(self, expedition_id: int) -> int:
         statement = select(func.count()).where(

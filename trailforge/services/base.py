@@ -21,6 +21,8 @@ SENSITIVE_FIELDS = {
     "token",
     "api_key",
     "authorization",
+    "phone",
+    "health",
 }
 
 

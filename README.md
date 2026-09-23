@@ -109,6 +109,19 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/v1/routes?actor_id=1' \
 
 列表接口都支持 `page`、`page_size`、`sort` 和 `direction`；各资源只接受文档中列出的排序字段，未知字段会返回明确的 422 业务错误。创建报名、打卡、紧急事件和库存变更时，正文包含 `idempotency_key`。同一作用域下用相同键和相同请求会返回原资源，用相同键发送不同请求会返回 409。
 
+## 活动资格策略
+
+高风险活动可以在体能等级之外叠加可配置的资格策略。组织者通过 `PUT /api/v1/expeditions/{id}/eligibility-policy` 维护策略，每次写入都会生成一个新的策略版本并停用旧版本；版本历史可通过 `GET /api/v1/expeditions/{id}/eligibility-policies` 查看。策略可以组合以下规则：
+
+- `training_window_days` 配合 `min_endurance_minutes` 或 `min_loaded_sessions`：最近若干天（按 UTC 时刻比较）内已完成的耐力训练分钟数或负重训练次数；
+- `min_completed_expeditions` 配合可选的 `experience_window_days`：最低已完成活动次数，窗口之外的旧经验不计入；
+- `blocked_restrictions` / `review_restrictions`：按名称匹配的活动健康限制，命中即拒绝或转入人工复核；
+- `min_emergency_contacts`：紧急联系人数量要求。
+
+报名事务内会计算出通过、拒绝或待复核，并把当时使用的策略版本、输入事实和逐条原因保存在资格评估记录中（`GET /api/v1/expeditions/{id}/registrations/{registration_id}/eligibility`）。评估记录不可变，之后的档案变化不会改写历史结论；策略更新只影响后续申请。报名前可以用 `POST /api/v1/expeditions/{id}/eligibility-precheck` 预检，预检只计算不落库。
+
+待复核的报名出现在 `GET /api/v1/expeditions/{id}/pending-reviews`，只能由活动组织者通过 `POST /api/v1/expeditions/{id}/registrations/{registration_id}/review` 处理，请求必须携带 `expected_version`（乐观锁）和理由。批准时会重新检查时间冲突与容量，容量不足时转为候补。相同幂等键的重复报名不会重复占位。未配置策略的旧活动保持原有体能等级校验行为，其资格预检直接返回通过。
+
 ## 目录
 
 ```text

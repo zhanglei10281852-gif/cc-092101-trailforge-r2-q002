@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy.orm import Session
 
 from trailforge.database.base import utc_now
@@ -7,6 +9,7 @@ from trailforge.domain.enums import (
     ACTIVITY_TRANSITIONS,
     ActivityStatus,
     AuditAction,
+    EligibilityDecision,
     RegistrationStatus,
     TeamRole,
 )
@@ -36,6 +39,7 @@ from trailforge.schemas.activities import (
 )
 from trailforge.schemas.common import Page
 from trailforge.services.base import ServiceBase
+from trailforge.services.eligibility import EligibilityService
 
 
 class ExpeditionService(ServiceBase):
@@ -183,7 +187,10 @@ class ExpeditionService(ServiceBase):
         if utc_now() > expedition.registration_deadline:
             raise ConflictError("registration deadline has passed")
         existing = self.expeditions.get_registration(expedition_id, data.user_id)
-        if existing is not None and existing.status != RegistrationStatus.WITHDRAWN:
+        if existing is not None and existing.status not in {
+            RegistrationStatus.WITHDRAWN,
+            RegistrationStatus.REJECTED,
+        }:
             raise ConflictError("user is already registered for this expedition")
         conflict = self.expeditions.conflicting_registration(
             data.user_id,
@@ -207,12 +214,24 @@ class ExpeditionService(ServiceBase):
                     "actual": fitness_rank,
                 },
             )
+        eligibility = EligibilityService(self.session)
+        policy = eligibility.find_active_policy(expedition.id)
+        evaluation = None
+        if policy is not None:
+            evaluation = eligibility.evaluate(
+                expedition_id=expedition.id,
+                user_id=user.id,
+                policy=policy,
+            )
         confirmed = self.expeditions.confirmed_count(expedition.id)
-        status = (
-            RegistrationStatus.CONFIRMED
-            if confirmed < expedition.capacity
-            else RegistrationStatus.WAITLISTED
-        )
+        if evaluation is not None and evaluation.decision == EligibilityDecision.REJECTED:
+            status = RegistrationStatus.REJECTED
+        elif evaluation is not None and evaluation.decision == EligibilityDecision.PENDING_REVIEW:
+            status = RegistrationStatus.PENDING
+        elif confirmed < expedition.capacity:
+            status = RegistrationStatus.CONFIRMED
+        else:
+            status = RegistrationStatus.WAITLISTED
         if existing is None:
             registration = ExpeditionRegistration(
                 expedition_id=expedition.id,
@@ -232,6 +251,9 @@ class ExpeditionService(ServiceBase):
             registration.notes = data.notes
             apply_version(registration, None)
         self.session.flush()
+        if evaluation is not None:
+            evaluation.registration_id = registration.id
+            eligibility.record_evaluation(evaluation)
         response = RegistrationResponse.model_validate(registration)
         self.save_idempotent(
             scope=scope,
@@ -241,13 +263,21 @@ class ExpeditionService(ServiceBase):
             resource_id=registration.id,
             response=response.model_dump(mode="json"),
         )
+        audit_context: dict[str, Any] = {
+            "expedition_id": expedition.id,
+            "capacity_status": status.value,
+        }
+        if evaluation is not None:
+            audit_context["eligibility_decision"] = str(evaluation.decision)
+            audit_context["eligibility_policy_version"] = evaluation.policy_version
+            audit_context["eligibility_evaluation_id"] = evaluation.id
         self.audit(
             actor_id=user.id,
             entity_type="expedition_registration",
             entity_id=registration.id,
             action=AuditAction.REGISTERED,
             after=self.snapshot(registration),
-            context={"expedition_id": expedition.id, "capacity_status": status.value},
+            context=audit_context,
             correlation_id=data.idempotency_key,
         )
         return response

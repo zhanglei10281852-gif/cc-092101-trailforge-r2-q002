@@ -6,6 +6,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from trailforge.domain.enums import FitnessLevel
 from trailforge.models.users import EmergencyContact, HealthRestriction, SportProfile, User
 from trailforge.repositories.base import BaseRepository, PageResult
+from trailforge.schemas.eligibility import normalize_restriction_name
 from trailforge.schemas.users import UserFilter
 
 
@@ -87,6 +88,17 @@ class UserRepository(BaseRepository[User]):
             HealthRestriction.is_active.is_(True),
         )
         return int(self.session.scalar(statement) or 0)
+
+    def active_restriction_names(self, user_id: int) -> list[str]:
+        statement = (
+            select(HealthRestriction.name)
+            .where(
+                HealthRestriction.user_id == user_id,
+                HealthRestriction.is_active.is_(True),
+            )
+            .order_by(HealthRestriction.id)
+        )
+        return [normalize_restriction_name(name) for name in self.session.scalars(statement)]
 
     def contact_count(self, user_id: int) -> int:
         return int(
